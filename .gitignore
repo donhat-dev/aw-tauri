@@ -26,3 +26,4 @@ dist-ssr
 # generated files
 src-tauri/icons/*
 /target/
+/resources/

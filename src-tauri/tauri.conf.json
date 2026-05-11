@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "aw-tauri",
+  "productName": "ActivityWatch",
   "version": "0.1.0",
   "identifier": "net.activitywatch.tauri",
   "app": {
@@ -18,6 +18,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../resources/aw-watcher-afk/**/*": "aw-watcher-afk/",
+      "../resources/aw-watcher-window/**/*": "aw-watcher-window/",
+      "../resources/aw-watcher-input/**/*": "aw-watcher-input/"
+    }
   }
 }

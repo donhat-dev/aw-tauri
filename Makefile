@@ -7,8 +7,22 @@ else
 endif
 OS := $(shell uname -s)
 
-build: prebuild
+WATCHER_DIST ?= ..
+
+build: prebuild bundle-watchers
 	npm run tauri build
+
+bundle-watchers:
+	@for watcher in aw-watcher-afk aw-watcher-window aw-watcher-input; do \
+		mkdir -p "resources/$$watcher"; \
+		src="$(WATCHER_DIST)/$$watcher/dist/$$watcher"; \
+		if [ -d "$$src" ]; then \
+			cp -r "$$src/." "resources/$$watcher/"; \
+			echo "Bundled $$watcher from $$src"; \
+		else \
+			echo "Skipping $$watcher (not yet packaged at $$src)"; \
+		fi; \
+	done
 
 dev: prebuild
 	npm run tauri dev
