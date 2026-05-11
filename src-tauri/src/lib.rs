@@ -358,6 +358,7 @@ impl Default for UserConfig {
             name: "aw-sync".to_string(),
             args: "daemon".to_string(),
         });
+        modules.push(ModuleEntry::Simple("aw-odoo-sync".to_string()));
 
         UserConfig {
             port: 5600,
