@@ -359,7 +359,6 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "aw-client-rust"
 version = "0.1.0"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#7c33810cd44393b3ecad64277b7e69bfeaee817b"
 dependencies = [
  "aw-models",
  "chrono",
@@ -380,7 +379,6 @@ dependencies = [
 [[package]]
 name = "aw-datastore"
 version = "0.1.0"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#7c33810cd44393b3ecad64277b7e69bfeaee817b"
 dependencies = [
  "aw-models",
  "aw-transform",
@@ -396,7 +394,6 @@ dependencies = [
 [[package]]
 name = "aw-models"
 version = "0.1.0"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#7c33810cd44393b3ecad64277b7e69bfeaee817b"
 dependencies = [
  "chrono",
  "log",
@@ -408,7 +405,6 @@ dependencies = [
 [[package]]
 name = "aw-query"
 version = "0.1.0"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#7c33810cd44393b3ecad64277b7e69bfeaee817b"
 dependencies = [
  "aw-datastore",
  "aw-models",
@@ -424,7 +420,6 @@ dependencies = [
 [[package]]
 name = "aw-server"
 version = "0.13.1"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#7c33810cd44393b3ecad64277b7e69bfeaee817b"
 dependencies = [
  "android_logger",
  "aw-client-rust",
@@ -444,13 +439,13 @@ dependencies = [
  "log",
  "log-panics",
  "openssl-sys",
+ "reqwest 0.11.27",
  "rocket",
  "rocket_cors",
  "rust-embed",
  "sd-notify",
  "serde",
  "serde_json",
- "subtle",
  "toml 0.8.2",
  "uuid",
 ]
@@ -489,7 +484,6 @@ dependencies = [
 [[package]]
 name = "aw-transform"
 version = "0.1.0"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#7c33810cd44393b3ecad64277b7e69bfeaee817b"
 dependencies = [
  "aw-models",
  "chrono",
@@ -4935,12 +4929,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "subtle"
-version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swift-rs"

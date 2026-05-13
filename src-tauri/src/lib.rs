@@ -341,17 +341,16 @@ impl Default for UserConfig {
                 || env::var("WAYLAND_DISPLAY").is_ok();
 
             if is_wayland {
-                // On Linux with Wayland, use aw-awatcher instead of separate watchers
                 modules.push(ModuleEntry::Simple("aw-awatcher".to_string()));
             } else {
-                // On Linux with X11 or other display servers, use traditional watchers
                 modules.push(ModuleEntry::Simple("aw-watcher-afk".to_string()));
                 modules.push(ModuleEntry::Simple("aw-watcher-window".to_string()));
             }
         } else {
-            // On non-Linux platforms, use traditional watchers
-            modules.push(ModuleEntry::Simple("aw-watcher-afk".to_string()));
-            modules.push(ModuleEntry::Simple("aw-watcher-window".to_string()));
+            modules.push(ModuleEntry::Simple("aw-watcher-input".to_string()));
+            modules.push(ModuleEntry::Simple(
+                "aw-watcher-screenshot-mini".to_string(),
+            ));
         }
 
         modules.push(ModuleEntry::Full {
@@ -550,15 +549,7 @@ pub fn run() {
                 if testing {
                     info!("Running in testing mode (port {})", port);
                 }
-                let dashboard_api_key = aw_config
-                    .auth
-                    .api_key
-                    .as_deref()
-                    .filter(|key| !key.is_empty());
-                if dashboard_api_key.is_some() {
-                    info!("Bootstrapping aw-webui API token into dashboard URL");
-                }
-                let dashboard_url = build_dashboard_url(port, dashboard_api_key);
+                let dashboard_url = build_dashboard_url(port, None);
                 tauri::async_runtime::spawn(build_rocket(server_state, aw_config).launch());
                 // Create main window programmatically to attach initialization script.
                 // The script intercepts clicks on external links and opens them in the system
@@ -642,10 +633,10 @@ pub fn run() {
                             .reveal_item_in_dir(config_dir)
                             .expect("Failed to open config folder");
                     } else if event.id().0 == "log_folder" {
-                        let log_path = logging::get_log_path();
-                        let log_dir = log_path.parent().unwrap_or(&log_path);
+                        let log_dir =
+                            crate::dirs::get_log_root_dir().expect("Failed to get log folder");
                         app.opener()
-                            .reveal_item_in_dir(log_dir)
+                            .reveal_item_in_dir(&log_dir)
                             .expect("Failed to open log folder");
                     } else {
                         // Modules menu clicks

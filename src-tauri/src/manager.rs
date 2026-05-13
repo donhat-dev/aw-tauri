@@ -484,14 +484,14 @@ fn handle(rx: Receiver<ModuleMessage>, state: Arc<Mutex<ManagerState>>) {
                             }
                         });
 
-                        debug!(
-                            "Module {name} stdout: {}",
-                            String::from_utf8_lossy(&output.stdout)
-                        );
-                        error!(
-                            "Module {name} stderr: {}",
-                            String::from_utf8_lossy(&output.stderr)
-                        );
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        if !stdout.trim().is_empty() {
+                            info!("Module {name} stdout: {}", stdout);
+                        }
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        if !stderr.trim().is_empty() {
+                            error!("Module {name} stderr: {}", stderr);
+                        }
                     }
                     data
                 }
@@ -553,6 +553,7 @@ fn start_generic_module_thread(
 
         // Start the child process
         let mut command = Command::new(&path);
+        apply_module_environment(&mut command, &name);
 
         // Use custom args if provided, otherwise only pass port arg if it's not the default (5600)
         if let Some(ref args) = custom_args {
@@ -565,7 +566,10 @@ fn start_generic_module_thread(
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
 
-        let child = command.stdout(std::process::Stdio::piped()).spawn();
+        let child = command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
 
         let child = match child {
             Ok(c) => c,
@@ -638,6 +642,14 @@ fn start_generic_module_thread(
     });
 }
 
+fn apply_module_environment(command: &mut Command, name: &str) {
+    if let Ok(log_root) = crate::dirs::get_log_root_dir() {
+        let module_log_dir = log_root.join(name);
+        command.env("AW_LOG_ROOT", &log_root);
+        command.env("AW_LOG_DIR", module_log_dir);
+    }
+}
+
 fn start_notify_module_thread(
     name: String,
     path: PathBuf,
@@ -671,6 +683,7 @@ fn start_notify_module_thread(
 
         // Start the child process with --output-only flag
         let mut command = Command::new(&path);
+        apply_module_environment(&mut command, &name);
 
         // Always add --output-only flag for aw-notify
         let mut args = vec!["--output-only".to_string()];
@@ -985,6 +998,16 @@ fn discover_modules() -> BTreeMap<String, PathBuf> {
     let path = env::var_os("PATH").unwrap_or_default();
     let mut paths = env::split_paths(&path).collect::<Vec<_>>();
 
+    // Always prepend exe's own directory — NSIS installs watcher bundles alongside aw-tauri.exe
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let exe_dir = exe_dir.to_path_buf();
+            if !paths.contains(&exe_dir) {
+                paths.insert(0, exe_dir);
+            }
+        }
+    }
+
     // check each path in discovery_paths and add it to the start of the paths list if it's not already there
     for path in config.discovery_paths.iter() {
         if !paths.contains(path) {
@@ -1025,9 +1048,11 @@ fn discover_modules() -> BTreeMap<String, PathBuf> {
                         continue;
                     }
 
-                    // If it's a directory starting with "aw-", add to search stack
+                    // If it's a directory starting with "aw-", recurse unless it's a launcher app
                     if metadata.is_dir() {
-                        dirs_to_search.push(path);
+                        if !excluded.contains(&file_name.as_str()) {
+                            dirs_to_search.push(path);
+                        }
                     }
                     // If it's an executable file
                     else if metadata.is_file() && file_name.ends_with(".exe") {

@@ -20,9 +20,9 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../resources/aw-watcher-afk/**/*": "aw-watcher-afk/",
-      "../resources/aw-watcher-window/**/*": "aw-watcher-window/",
-      "../resources/aw-watcher-input/**/*": "aw-watcher-input/"
+      "../resources/aw-watcher-input/": "aw-watcher-input/",
+      "../resources/aw-watcher-screenshot-mini/": "aw-watcher-screenshot-mini/",
+      "../resources/aw-odoo-sync/": "aw-odoo-sync/"
     }
   }
 }

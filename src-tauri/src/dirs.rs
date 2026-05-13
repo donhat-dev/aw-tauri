@@ -51,25 +51,23 @@ pub fn get_data_dir() -> Result<PathBuf, ()> {
 }
 
 #[cfg(all(not(target_os = "android"), target_os = "linux"))]
-pub fn get_log_dir() -> Result<PathBuf, ()> {
+pub fn get_log_root_dir() -> Result<PathBuf, ()> {
     // Linux uses cache dir for logs
     let dir = dirs::cache_dir()
         .ok_or(())?
         .join("activitywatch")
-        .join("aw-tauri")
         .join("log");
     fs::create_dir_all(&dir).expect("Unable to create log dir");
     Ok(dir)
 }
 
 #[cfg(target_os = "windows")]
-pub fn get_log_dir() -> Result<PathBuf, ()> {
-    // Windows: %LOCALAPPDATA%\activitywatch\Logs\aw-tauri
+pub fn get_log_root_dir() -> Result<PathBuf, ()> {
+    // Windows: %LOCALAPPDATA%\activitywatch\Logs
     let dir = dirs::data_local_dir()
         .ok_or(())?
         .join("activitywatch")
-        .join("Logs")
-        .join("aw-tauri");
+        .join("Logs");
     fs::create_dir_all(&dir).expect("Unable to create log dir");
     Ok(dir)
 }
@@ -79,21 +77,26 @@ pub fn get_log_dir() -> Result<PathBuf, ()> {
     not(target_os = "linux"),
     not(target_os = "windows")
 ))]
-pub fn get_log_dir() -> Result<PathBuf, ()> {
-    // macOS: ~/Library/Logs/activitywatch/aw-tauri
+pub fn get_log_root_dir() -> Result<PathBuf, ()> {
+    // macOS: ~/Library/Logs/activitywatch
     let dir = dirs::home_dir()
         .ok_or(())?
         .join("Library")
         .join("Logs")
-        .join("activitywatch")
-        .join("aw-tauri");
+        .join("activitywatch");
     fs::create_dir_all(&dir).expect("Unable to create log dir");
     Ok(dir)
 }
 
 #[cfg(target_os = "android")]
-pub fn get_log_dir() -> Result<PathBuf, ()> {
+pub fn get_log_root_dir() -> Result<PathBuf, ()> {
     panic!("not implemented on Android");
+}
+
+pub fn get_log_dir() -> Result<PathBuf, ()> {
+    let dir = get_log_root_dir()?.join("aw-tauri");
+    fs::create_dir_all(&dir).expect("Unable to create log dir");
+    Ok(dir)
 }
 
 pub fn get_config_path() -> PathBuf {
@@ -170,19 +173,43 @@ pub fn get_discovery_paths() -> Vec<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        // Windows: User-specific and system paths
+        // Highest priority: directory containing this executable (NSIS installs watchers alongside aw-tauri.exe)
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                discovery_paths.push(exe_dir.to_path_buf());
+            }
+        }
+
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let base = PathBuf::from(&local_app_data);
+            // NSIS install path (productName = "ActivityWatch" → lowercase dir)
+            discovery_paths.push(base.join("activitywatch"));
+            // Legacy aw-modules
+            discovery_paths.push(
+                base.join("..")
+                    .join("..")
+                    .join("aw-modules")
+                    .canonicalize()
+                    .unwrap_or_default(),
+            );
+        }
+
         if let Ok(username) = std::env::var("USERNAME") {
             discovery_paths.push(PathBuf::from(format!(r"C:/Users/{}/aw-modules", username)));
-            discovery_paths.push(PathBuf::from(format!(
-                r"C:/Users/{}/AppData/Local/Programs/ActivityWatch",
-                username
-            )));
         }
     }
 
     #[cfg(target_os = "macos")]
     {
         // macOS: Application bundle and user paths
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(macos_dir) = exe_path.parent() {
+                discovery_paths.push(macos_dir.to_path_buf());
+                if let Some(contents_dir) = macos_dir.parent() {
+                    discovery_paths.push(contents_dir.join("Resources"));
+                }
+            }
+        }
         if let Ok(home_dir) = std::env::var("HOME") {
             discovery_paths.push(PathBuf::from(home_dir).join("aw-modules"));
         }
