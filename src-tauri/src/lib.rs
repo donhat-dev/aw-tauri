@@ -427,6 +427,209 @@ fn open_external(url: String, app: tauri::AppHandle) {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct MacosTccPermissions {
+    is_macos: bool,
+    screen_recording: bool,
+    input_monitoring: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct MacosTccAutoRequestState {
+    input_attempted: bool,
+    screen_attempted: bool,
+}
+
+#[cfg(target_os = "macos")]
+mod macos_tcc {
+    const K_IOHID_REQUEST_TYPE_LISTEN_EVENT: i32 = 1;
+    const K_IOHID_ACCESS_TYPE_GRANTED: i32 = 0;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOHIDCheckAccess(request_type: i32) -> i32;
+        fn IOHIDRequestAccess(request_type: i32) -> bool;
+    }
+
+    pub fn has_screen_recording_permission() -> bool {
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    pub fn request_screen_recording_permission() -> bool {
+        unsafe { CGRequestScreenCaptureAccess() }
+    }
+
+    pub fn has_input_monitoring_permission() -> bool {
+        unsafe {
+            IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) == K_IOHID_ACCESS_TYPE_GRANTED
+        }
+    }
+
+    pub fn request_input_monitoring_permission() -> bool {
+        unsafe { IOHIDRequestAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tcc_auto_request_state_path() -> PathBuf {
+    dirs::get_config_dir()
+        .expect("Failed to get config dir")
+        .join("macos_tcc_auto_request_state.json")
+}
+
+#[cfg(target_os = "macos")]
+fn load_macos_tcc_auto_request_state() -> MacosTccAutoRequestState {
+    let path = macos_tcc_auto_request_state_path();
+    if !path.exists() {
+        return MacosTccAutoRequestState::default();
+    }
+
+    match read_to_string(&path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<MacosTccAutoRequestState>(&contents).ok())
+    {
+        Some(state) => state,
+        None => {
+            warn!(
+                "Failed to parse macOS TCC auto request state at {}. Resetting it.",
+                path.display()
+            );
+            MacosTccAutoRequestState::default()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn save_macos_tcc_auto_request_state(state: &MacosTccAutoRequestState) {
+    let path = macos_tcc_auto_request_state_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = create_dir_all(parent) {
+            warn!(
+                "Failed to create macOS TCC auto request state dir {}: {}",
+                parent.display(),
+                e
+            );
+            return;
+        }
+    }
+
+    match serde_json::to_string_pretty(state) {
+        Ok(contents) => {
+            if let Err(e) = write(&path, contents) {
+                warn!(
+                    "Failed to write macOS TCC auto request state at {}: {}",
+                    path.display(),
+                    e
+                );
+            }
+        }
+        Err(e) => warn!("Failed to serialize macOS TCC auto request state: {}", e),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_request_next_macos_tcc_permission() {
+    let has_input = macos_tcc::has_input_monitoring_permission();
+    let has_screen = macos_tcc::has_screen_recording_permission();
+    let path = macos_tcc_auto_request_state_path();
+
+    if has_input && has_screen {
+        let _ = remove_file(path);
+        return;
+    }
+
+    let mut state = load_macos_tcc_auto_request_state();
+
+    if !has_input && !state.input_attempted {
+        state.input_attempted = true;
+        save_macos_tcc_auto_request_state(&state);
+        info!("Requesting macOS Input Monitoring permission from the Tauri main process");
+        let granted = macos_tcc::request_input_monitoring_permission();
+        info!("macOS Input Monitoring request returned: {}", granted);
+        return;
+    }
+
+    if !has_screen && !state.screen_attempted {
+        state.screen_attempted = true;
+        save_macos_tcc_auto_request_state(&state);
+        info!("Requesting macOS Screen Recording permission from the Tauri main process");
+        let granted = macos_tcc::request_screen_recording_permission();
+        info!("macOS Screen Recording request returned: {}", granted);
+        return;
+    }
+
+    info!(
+        "macOS TCC permissions still missing after prior prompt attempts; relying on WebUI alerts/settings links"
+    );
+}
+
+#[tauri::command]
+fn macos_tcc_permissions() -> MacosTccPermissions {
+    #[cfg(target_os = "macos")]
+    {
+        return MacosTccPermissions {
+            is_macos: true,
+            screen_recording: macos_tcc::has_screen_recording_permission(),
+            input_monitoring: macos_tcc::has_input_monitoring_permission(),
+        };
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        MacosTccPermissions {
+            is_macos: false,
+            screen_recording: true,
+            input_monitoring: true,
+        }
+    }
+}
+
+#[tauri::command]
+fn request_macos_tcc_permission(kind: String) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        match kind.as_str() {
+            "input" | "input_monitoring" => Ok(macos_tcc::request_input_monitoring_permission()),
+            "screen" | "screen_recording" => Ok(macos_tcc::request_screen_recording_permission()),
+            _ => Err(format!("Unknown macOS privacy permission: {}", kind)),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = kind;
+        Ok(true)
+    }
+}
+
+fn macos_privacy_settings_url(kind: &str) -> &'static str {
+    match kind {
+        "input" | "input_monitoring" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        }
+        "screen" | "screen_recording" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+        _ => "x-apple.systempreferences:com.apple.preference.security",
+    }
+}
+
+#[tauri::command]
+fn open_macos_privacy_settings(kind: String, app: tauri::AppHandle) -> Result<(), String> {
+    let url = macos_privacy_settings_url(&kind);
+    info!("Opening macOS privacy settings: {}", url);
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| format!("Failed to open macOS privacy settings: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Rotate log if needed (before initializing logging)
@@ -566,6 +769,10 @@ pub fn run() {
                 .visible(false)
                 .initialization_script(
                     r#"
+                    window.__AW_IS_TAURI__ = true;
+                    window.__AW_TAURI_INVOKE__ = function(command, args) {
+                        return window.__TAURI_INTERNALS__.invoke(command, args || {});
+                    };
                     document.addEventListener('click', function(e) {
                         var el = e.target;
                         while (el && el.tagName !== 'A') { el = el.parentElement; }
@@ -579,6 +786,8 @@ pub fn run() {
                 )
                 .build()
                 .expect("Failed to create main window");
+                #[cfg(target_os = "macos")]
+                maybe_request_next_macos_tcc_permission();
                 let manager_state = manager::start_manager();
 
                 let open = MenuItem::with_id(app, "open", "Open Dashboard", true, None::<&str>)
@@ -664,7 +873,13 @@ pub fn run() {
             };
         })
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![greet, open_external])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            open_external,
+            macos_tcc_permissions,
+            request_macos_tcc_permission,
+            open_macos_privacy_settings
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

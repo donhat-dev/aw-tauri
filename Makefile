@@ -14,11 +14,15 @@ endif
 WATCHER_DIST ?= ..
 -include ../tauri-watchers.mk
 TAURI_WATCHERS ?= aw-watcher-input aw-watcher-screenshot-mini aw-odoo-sync
+TAURI_BUILD_ARGS :=
+ifneq ($(strip $(TAURI_BUNDLES)),)
+	TAURI_BUILD_ARGS := -- --bundles $(TAURI_BUNDLES)
+endif
 
 .PHONY: build bundle-watchers stage-runtime-watchers
 
 build: prebuild bundle-watchers
-	npm run tauri build
+	npm run tauri build $(TAURI_BUILD_ARGS)
 	$(MAKE) stage-runtime-watchers
 
 bundle-watchers:

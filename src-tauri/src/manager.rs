@@ -32,7 +32,7 @@ use {
 
 use log::{debug, error, info, trace};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
     mpsc::{channel, Receiver, Sender},
@@ -231,6 +231,134 @@ fn send_sigterm(pid: u32) -> Result<(), nix::Error> {
     }
 }
 
+#[cfg(unix)]
+fn send_sigkill(pid: u32) -> Result<(), nix::Error> {
+    signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL)
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct RunningProcess {
+    pid: u32,
+    ppid: u32,
+    command: String,
+}
+
+#[cfg(unix)]
+fn split_first_field(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    let split_at = input.find(|c: char| c.is_whitespace())?;
+    Some((&input[..split_at], &input[split_at..]))
+}
+
+#[cfg(unix)]
+fn list_running_processes() -> Vec<RunningProcess> {
+    let output = match Command::new("ps")
+        .args(["axww", "-o", "pid=,ppid=,command="])
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            error!("Failed to list running processes: {e}");
+            return Vec::new();
+        }
+    };
+
+    if !output.status.success() {
+        error!("ps exited with status {}", output.status);
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (pid_str, rest) = split_first_field(line)?;
+            let (ppid_str, command) = split_first_field(rest)?;
+            Some(RunningProcess {
+                pid: pid_str.parse().ok()?,
+                ppid: ppid_str.parse().ok()?,
+                command: command.trim_start().to_string(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn command_starts_with_path(command: &str, path: &str) -> bool {
+    command == path
+        || command
+            .strip_prefix(path)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|c| c.is_whitespace())
+}
+
+#[cfg(unix)]
+fn process_command_matches_path(command: &str, path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    if command_starts_with_path(command, path_str.as_ref()) {
+        return true;
+    }
+
+    if let Ok(canonical_path) = fs::canonicalize(path) {
+        let canonical_path = canonical_path.to_string_lossy();
+        return command_starts_with_path(command, canonical_path.as_ref());
+    }
+
+    false
+}
+
+#[cfg(unix)]
+fn find_orphaned_module_processes(modules: &BTreeMap<String, PathBuf>) -> Vec<(String, u32)> {
+    let current_pid = std::process::id();
+    let mut matches = Vec::new();
+
+    for process in list_running_processes() {
+        if process.pid == current_pid || process.ppid != 1 {
+            continue;
+        }
+
+        for (name, path) in modules {
+            if process_command_matches_path(&process.command, path) {
+                matches.push((name.clone(), process.pid));
+                break;
+            }
+        }
+    }
+
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+#[cfg(unix)]
+fn terminate_orphaned_module_processes(modules: &BTreeMap<String, PathBuf>) {
+    let orphaned = find_orphaned_module_processes(modules);
+    if orphaned.is_empty() {
+        return;
+    }
+
+    for (name, pid) in &orphaned {
+        info!("Terminating orphaned module process before startup: {name} pid={pid}");
+        if let Err(e) = send_sigterm(*pid) {
+            error!("Failed to send SIGTERM to orphaned module {name} pid={pid}: {e}");
+        }
+    }
+
+    for _ in 0..20 {
+        thread::sleep(Duration::from_millis(100));
+        if find_orphaned_module_processes(modules).is_empty() {
+            return;
+        }
+    }
+
+    for (name, pid) in find_orphaned_module_processes(modules) {
+        error!("Orphaned module {name} pid={pid} did not exit after SIGTERM; sending SIGKILL");
+        if let Err(e) = send_sigkill(pid) {
+            error!("Failed to send SIGKILL to orphaned module {name} pid={pid}: {e}");
+        }
+    }
+}
+
 #[cfg(windows)]
 fn send_sigterm(pid: u32) -> Result<(), std::io::Error> {
     let pid = pid as DWORD;
@@ -334,6 +462,16 @@ fn monitor_parent_process(child_pid: u32, read_fd: i32) {
 pub fn start_manager() -> Arc<Mutex<ManagerState>> {
     let (tx, rx) = channel();
     let state = Arc::new(Mutex::new(ManagerState::new(tx.clone())));
+
+    #[cfg(unix)]
+    {
+        let modules = state
+            .lock()
+            .expect("Failed to acquire manager_state lock")
+            .modules_discovered
+            .clone();
+        terminate_orphaned_module_processes(&modules);
+    }
 
     // Start the modules
     let config = get_config();
