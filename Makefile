@@ -15,8 +15,12 @@ WATCHER_DIST ?= ..
 -include ../tauri-watchers.mk
 TAURI_WATCHERS ?= aw-watcher-input aw-watcher-screenshot-mini aw-odoo-sync
 TAURI_BUILD_ARGS :=
+ifeq ($(TAURI_NO_BUNDLE),true)
+	TAURI_BUILD_ARGS := -- --no-bundle
+else
 ifneq ($(strip $(TAURI_BUNDLES)),)
 	TAURI_BUILD_ARGS := -- --bundles $(TAURI_BUNDLES)
+endif
 endif
 
 .PHONY: build bundle-watchers stage-runtime-watchers
