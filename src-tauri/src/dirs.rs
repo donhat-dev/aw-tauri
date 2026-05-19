@@ -105,6 +105,27 @@ pub fn get_config_path() -> PathBuf {
         .join("config.toml")
 }
 
+/// Path to aw-odoo-sync config, mirroring aw_core.dirs.get_config_dir("aw-odoo-sync").
+/// Windows/macOS: {local_data}\activitywatch\activitywatch\aw-odoo-sync\config.toml
+/// Linux:         {config_dir}/activitywatch/aw-odoo-sync/config.toml
+pub fn get_odoo_sync_config_path() -> PathBuf {
+    let dir = if cfg!(target_os = "linux") {
+        dirs::config_dir()
+            .unwrap_or_default()
+            .join("activitywatch")
+            .join("aw-odoo-sync")
+    } else {
+        dirs::data_local_dir()
+            .or_else(dirs::config_dir)
+            .unwrap_or_default()
+            .join("activitywatch")
+            .join("activitywatch")
+            .join("aw-odoo-sync")
+    };
+    let _ = fs::create_dir_all(&dir);
+    dir.join("config.toml")
+}
+
 pub fn get_log_path() -> PathBuf {
     get_log_dir()
         .expect("Failed to get log dir")

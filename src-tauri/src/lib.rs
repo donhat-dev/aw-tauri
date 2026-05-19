@@ -630,6 +630,23 @@ fn open_macos_privacy_settings(kind: String, app: tauri::AppHandle) -> Result<()
         .map_err(|e| format!("Failed to open macOS privacy settings: {}", e))
 }
 
+fn is_odoo_configured() -> bool {
+    let path = dirs::get_odoo_sync_config_path();
+    if !path.exists() {
+        return false;
+    }
+    let content = read_to_string(&path).unwrap_or_default();
+    let Ok(value) = toml::from_str::<toml::Value>(&content) else {
+        return false;
+    };
+    let Some(odoo) = value.get("odoo") else {
+        return false;
+    };
+    let base_url = odoo.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+    let pin_code = odoo.get("pin_code").and_then(|v| v.as_str()).unwrap_or("");
+    !base_url.is_empty() && base_url != "http://localhost:8069" && !pin_code.is_empty()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Rotate log if needed (before initializing logging)
@@ -759,7 +776,7 @@ pub fn run() {
                 // browser via the open_external Tauri command. This approach works reliably for
                 // SPA-generated links where on_navigation (which only fires for top-level
                 // webview navigations) would miss JS-driven internal route changes.
-                let _main_window = WebviewWindowBuilder::new(
+                let main_window = WebviewWindowBuilder::new(
                     app,
                     "main",
                     tauri::WebviewUrl::External(dashboard_url),
@@ -789,6 +806,10 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 maybe_request_next_macos_tcc_permission();
                 let manager_state = manager::start_manager();
+
+                if !is_odoo_configured() {
+                    main_window.show().expect("Failed to show main window for Odoo setup");
+                }
 
                 let open = MenuItem::with_id(app, "open", "Open Dashboard", true, None::<&str>)
                     .expect("Failed to create open menu item");
@@ -868,8 +889,10 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = &event {
-                api.prevent_close();
-                window.hide().expect("Failed to hide main window");
+                if window.label() == "main" {
+                    api.prevent_close();
+                    window.hide().expect("Failed to hide main window");
+                }
             };
         })
         .plugin(tauri_plugin_shell::init())
