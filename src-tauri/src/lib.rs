@@ -427,6 +427,15 @@ fn open_external(url: String, app: tauri::AppHandle) {
     }
 }
 
+#[tauri::command]
+fn close_idle_dialog(app: tauri::AppHandle) {
+    if let Some(window) = app.webview_windows().get("idle-dialog") {
+        if let Err(e) = window.close() {
+            warn!("Failed to close idle dialog: {}", e);
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct MacosTccPermissions {
     is_macos: bool,
@@ -899,6 +908,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             open_external,
+            close_idle_dialog,
             macos_tcc_permissions,
             request_macos_tcc_permission,
             open_macos_privacy_settings

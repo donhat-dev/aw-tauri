@@ -32,7 +32,9 @@ use {
 
 use log::{debug, error, info, trace};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{
     mpsc::{channel, Receiver, Sender},
@@ -41,6 +43,7 @@ use std::sync::{
 use std::time::Duration;
 use std::{env, fs, thread};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, SubmenuBuilder};
+use tauri::{webview::WebviewWindowBuilder, Manager, WebviewUrl};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use crate::{get_app_handle, get_config, get_tray_id, HANDLE_CONDVAR};
@@ -655,6 +658,11 @@ fn start_module_thread(
         start_notify_module_thread(name, path, custom_args, tx);
         return;
     }
+    if name == "aw-odoo-sync" {
+        info!("Using special aw-odoo-sync handler for module: {name}");
+        start_odoo_sync_module_thread(name, path, custom_args, tx);
+        return;
+    }
 
     start_generic_module_thread(name, path, custom_args, tx);
 }
@@ -775,6 +783,144 @@ fn start_generic_module_thread(
         tx.send(ModuleMessage::Stopped {
             name: name.to_string(),
             output,
+        })
+        .expect("Failed to send module stopped message");
+    });
+}
+
+fn start_odoo_sync_module_thread(
+    name: String,
+    path: PathBuf,
+    custom_args: Option<Vec<String>>,
+    tx: Sender<ModuleMessage>,
+) {
+    thread::spawn(move || {
+        #[cfg(windows)]
+        let job_handle = match create_job_object() {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                error!("Failed to create job object for {name}: {e}");
+                None
+            }
+        };
+
+        #[cfg(unix)]
+        let (pipe_read_fd, _pipe_write_keeper) = match pipe() {
+            Ok((read_fd, write_fd)) => (read_fd.into_raw_fd(), Some(std::fs::File::from(write_fd))),
+            Err(e) => {
+                error!("Failed to create pipe for parent monitoring: {}", e);
+                (-1, None)
+            }
+        };
+
+        let mut command = Command::new(&path);
+        apply_module_environment(&mut command, &name);
+
+        if let Some(ref args) = custom_args {
+            command.args(args);
+        } else if get_config().port != 5600 {
+            command.args(["--port", get_config().port.to_string().as_str()]);
+        }
+
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+
+        let mut child = match command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                error!("Failed to start module {name}: {e}");
+                #[cfg(windows)]
+                if let Some(handle) = job_handle {
+                    unsafe {
+                        CloseHandle(handle);
+                    }
+                }
+                #[cfg(unix)]
+                if pipe_read_fd >= 0 {
+                    let _ = close(pipe_read_fd);
+                }
+                return;
+            }
+        };
+
+        let child_pid = child.id();
+
+        #[cfg(windows)]
+        if let Some(handle) = job_handle {
+            use std::os::windows::io::AsRawHandle;
+            let child_handle = child.as_raw_handle() as HANDLE;
+            unsafe {
+                if AssignProcessToJobObject(handle, child_handle) == 0 {
+                    error!(
+                        "Failed to assign child process to job object: {:?}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        if pipe_read_fd >= 0 {
+            monitor_parent_process(child_pid, pipe_read_fd);
+        }
+
+        tx.send(ModuleMessage::Started {
+            name: name.to_string(),
+            pid: child_pid,
+            args: custom_args.clone(),
+        })
+        .expect("Failed to send Module Started message");
+
+        if let Some(stderr) = child.stderr.take() {
+            let stderr_name = name.clone();
+            thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line_str) => {
+                            if !line_str.trim().is_empty() {
+                                info!("{stderr_name} stderr: {line_str}");
+                            }
+                        }
+                        Err(e) => error!("Failed to read stderr from {stderr_name}: {e}"),
+                    }
+                }
+            });
+        }
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                match line {
+                    Ok(line_str) => {
+                        info!("aw-odoo-sync output: {}", line_str);
+                        handle_odoo_sync_output_line(&line_str);
+                    }
+                    Err(e) => error!("Failed to read line from aw-odoo-sync: {}", e),
+                }
+            }
+        }
+
+        let status = child.wait().expect("Failed to wait on child process");
+
+        #[cfg(windows)]
+        if let Some(handle) = job_handle {
+            unsafe {
+                CloseHandle(handle);
+            }
+        }
+
+        tx.send(ModuleMessage::Stopped {
+            name: name.to_string(),
+            output: std::process::Output {
+                status,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
         })
         .expect("Failed to send module stopped message");
     });
@@ -910,7 +1056,7 @@ fn start_notify_module_thread(
         // Send a message to the manager that the module has started
         tx.send(ModuleMessage::Started {
             name: name.to_string(),
-            pid: child.id(),
+            pid: child_pid,
             args: Some(args),
         })
         .expect("Failed to send module started message");
@@ -1021,6 +1167,66 @@ fn send_notification(title: &str, message: &str) {
         }
     } else {
         error!("Failed to get app handle lock for notification");
+    }
+}
+
+fn handle_odoo_sync_output_line(line: &str) {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return;
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        debug!("Ignoring non-JSON aw-odoo-sync output: {}", trimmed);
+        return;
+    };
+    if payload.get("kind").and_then(|value| value.as_str()) != Some("aw-odoo-sync.idle-dialog.show")
+    {
+        return;
+    }
+    show_idle_dialog(payload);
+}
+
+fn show_idle_dialog(payload: serde_json::Value) {
+    let Ok(app_handle_guard) = get_app_handle().lock() else {
+        error!("Failed to get app handle lock for idle dialog");
+        return;
+    };
+    let app_handle = &*app_handle_guard;
+
+    if let Some(window) = app_handle.webview_windows().get("idle-dialog") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+
+    let payload_json = match serde_json::to_string(&payload) {
+        Ok(value) => value,
+        Err(e) => {
+            error!("Failed to serialize idle dialog payload: {}", e);
+            "{}".to_string()
+        }
+    };
+    let init_script = format!("window.__AW_IDLE_DIALOG_PAYLOAD__ = {};", payload_json);
+
+    let window = WebviewWindowBuilder::new(
+        app_handle,
+        "idle-dialog",
+        WebviewUrl::App("idle-dialog.html".into()),
+    )
+    .title("Idle time detected")
+    .inner_size(480.0, 420.0)
+    .resizable(false)
+    .decorations(true)
+    .always_on_top(true)
+    .center()
+    .initialization_script(&init_script)
+    .build();
+
+    match window {
+        Ok(window) => {
+            let _ = window.set_focus();
+        }
+        Err(e) => error!("Failed to create idle dialog window: {}", e),
     }
 }
 
