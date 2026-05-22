@@ -3,6 +3,9 @@
   "productName": "ActivityWatch",
   "version": "0.1.0",
   "identifier": "net.activitywatch.ActivityWatch",
+  "build": {
+    "frontendDist": "../aw-webui/dist"
+  },
   "app": {
     "windows": [],
     "security": {

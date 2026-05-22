@@ -85,10 +85,10 @@ src-tauri/icons/icon.png: aw-webui/.git
 	mkdir -p src-tauri/icons
 	npm run tauri icon "./aw-webui/media/logo/logo.png"
 
-aw-webui/dist: aw-webui/.git
+aw-webui/dist/index.html: aw-webui/.git
 	$(MAKE) -C aw-webui build SHELL=bash
 
-prebuild: aw-webui/dist node_modules src-tauri/icons/icon.png
+prebuild: aw-webui/dist/index.html node_modules src-tauri/icons/icon.png
 
 precommit: format check
 
