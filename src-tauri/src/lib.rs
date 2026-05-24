@@ -436,6 +436,31 @@ fn close_idle_dialog(app: tauri::AppHandle) {
     }
 }
 
+#[tauri::command]
+fn idle_dialog_action(
+    timer_session_id: Option<i64>,
+    action: String,
+    resume_timer: bool,
+    project_id: Option<i64>,
+    task_id: Option<i64>,
+) -> Result<(), String> {
+    info!(
+        "Idle dialog action requested from webview: timer_session_id={:?} action={} resume_timer={}",
+        timer_session_id,
+        action,
+        resume_timer
+    );
+    let payload = serde_json::json!({
+        "kind": "aw-tauri.idle-dialog.action",
+        "timer_session_id": timer_session_id,
+        "action": action,
+        "resume_timer": resume_timer,
+        "project_id": project_id,
+        "task_id": task_id,
+    });
+    manager::send_odoo_sync_command(payload)
+}
+
 #[derive(Debug, Serialize)]
 struct MacosTccPermissions {
     is_macos: bool,
@@ -909,6 +934,7 @@ pub fn run() {
             greet,
             open_external,
             close_idle_dialog,
+            idle_dialog_action,
             macos_tcc_permissions,
             request_macos_tcc_permission,
             open_macos_privacy_settings

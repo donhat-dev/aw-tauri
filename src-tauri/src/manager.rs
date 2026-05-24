@@ -30,12 +30,14 @@ use {
     },
 };
 
+use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{ChildStdin, Command};
 use std::sync::{
     mpsc::{channel, Receiver, Sender},
     Arc, Mutex,
@@ -47,8 +49,11 @@ use tauri::{webview::WebviewWindowBuilder, Manager, WebviewUrl};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use crate::{get_app_handle, get_config, get_tray_id, HANDLE_CONDVAR};
-use std::io::{BufRead, BufReader};
 use tauri_plugin_notification::NotificationExt;
+
+lazy_static! {
+    static ref ODOO_SYNC_STDIN: Mutex<Option<ChildStdin>> = Mutex::new(None);
+}
 
 #[derive(Debug)]
 enum ModuleMessage {
@@ -826,6 +831,7 @@ fn start_odoo_sync_module_thread(
         command.creation_flags(CREATE_NO_WINDOW);
 
         let mut child = match command
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -848,6 +854,11 @@ fn start_odoo_sync_module_thread(
         };
 
         let child_pid = child.id();
+        if let Ok(mut stdin_guard) = ODOO_SYNC_STDIN.lock() {
+            *stdin_guard = child.stdin.take();
+        } else {
+            error!("Failed to store aw-odoo-sync stdin pipe");
+        }
 
         #[cfg(windows)]
         if let Some(handle) = job_handle {
@@ -906,6 +917,9 @@ fn start_odoo_sync_module_thread(
         }
 
         let status = child.wait().expect("Failed to wait on child process");
+        if let Ok(mut stdin_guard) = ODOO_SYNC_STDIN.lock() {
+            *stdin_guard = None;
+        }
 
         #[cfg(windows)]
         if let Some(handle) = job_handle {
@@ -1170,6 +1184,30 @@ fn send_notification(title: &str, message: &str) {
     }
 }
 
+pub fn send_odoo_sync_command(payload: serde_json::Value) -> Result<(), String> {
+    if payload.get("kind").and_then(|value| value.as_str()) == Some("aw-tauri.idle-dialog.action") {
+        info!(
+            "Sending idle dialog action to aw-odoo-sync: timer_session_id={:?} action={:?} resume_timer={:?}",
+            payload.get("timer_session_id"),
+            payload.get("action"),
+            payload.get("resume_timer")
+        );
+    }
+    let mut stdin_guard = ODOO_SYNC_STDIN
+        .lock()
+        .map_err(|_| "Failed to lock aw-odoo-sync stdin".to_string())?;
+    let Some(stdin) = stdin_guard.as_mut() else {
+        return Err("aw-odoo-sync is not running or has no command pipe".to_string());
+    };
+    let line = serde_json::to_string(&payload)
+        .map_err(|e| format!("Failed to serialize aw-odoo-sync command: {e}"))?;
+    stdin
+        .write_all(line.as_bytes())
+        .and_then(|_| stdin.write_all(b"\n"))
+        .and_then(|_| stdin.flush())
+        .map_err(|e| format!("Failed to write aw-odoo-sync command: {e}"))
+}
+
 fn handle_odoo_sync_output_line(line: &str) {
     let trimmed = line.trim();
     if !trimmed.starts_with('{') {
@@ -1179,11 +1217,23 @@ fn handle_odoo_sync_output_line(line: &str) {
         debug!("Ignoring non-JSON aw-odoo-sync output: {}", trimmed);
         return;
     };
-    if payload.get("kind").and_then(|value| value.as_str()) != Some("aw-odoo-sync.idle-dialog.show")
-    {
-        return;
+    match payload.get("kind").and_then(|value| value.as_str()) {
+        Some("aw-odoo-sync.idle-dialog.show") | Some("aw-odoo-sync.idle-dialog.update") => {
+            info!(
+                "Received idle dialog payload from aw-odoo-sync: kind={:?} timer_session_id={:?} idle_seconds={:?} state={:?}",
+                payload.get("kind"),
+                payload.get("timer_session_id"),
+                payload.get("idle_seconds"),
+                payload.get("state")
+            );
+            show_idle_dialog(payload);
+        }
+        Some("aw-odoo-sync.idle-dialog.closed") => {
+            info!("Received idle dialog close event from aw-odoo-sync");
+            close_idle_dialog_window();
+        }
+        _ => {}
     }
-    show_idle_dialog(payload);
 }
 
 fn show_idle_dialog(payload: serde_json::Value) {
@@ -1194,6 +1244,13 @@ fn show_idle_dialog(payload: serde_json::Value) {
     let app_handle = &*app_handle_guard;
 
     if let Some(window) = app_handle.webview_windows().get("idle-dialog") {
+        info!(
+            "Updating existing idle dialog window timer_session_id={:?} idle_seconds={:?} state={:?}",
+            payload.get("timer_session_id"),
+            payload.get("idle_seconds"),
+            payload.get("state")
+        );
+        update_idle_dialog_window(&window, &payload);
         let _ = window.show();
         let _ = window.set_focus();
         return;
@@ -1214,9 +1271,10 @@ fn show_idle_dialog(payload: serde_json::Value) {
         WebviewUrl::App("idle-dialog.html".into()),
     )
     .title("Idle time detected")
-    .inner_size(480.0, 420.0)
+    .inner_size(672.0, 468.0)
     .resizable(false)
-    .decorations(true)
+    .decorations(false)
+    .transparent(true)
     .always_on_top(true)
     .center()
     .initialization_script(&init_script)
@@ -1224,9 +1282,47 @@ fn show_idle_dialog(payload: serde_json::Value) {
 
     match window {
         Ok(window) => {
+            info!(
+                "Created idle dialog window timer_session_id={:?} idle_seconds={:?} state={:?}",
+                payload.get("timer_session_id"),
+                payload.get("idle_seconds"),
+                payload.get("state")
+            );
             let _ = window.set_focus();
         }
         Err(e) => error!("Failed to create idle dialog window: {}", e),
+    }
+}
+
+fn update_idle_dialog_window(window: &tauri::WebviewWindow, payload: &serde_json::Value) {
+    let payload_json = match serde_json::to_string(payload) {
+        Ok(value) => value,
+        Err(e) => {
+            error!("Failed to serialize idle dialog update payload: {}", e);
+            return;
+        }
+    };
+    let script = format!(
+        "if (window.__AW_IDLE_DIALOG_UPDATE__) window.__AW_IDLE_DIALOG_UPDATE__({});",
+        payload_json
+    );
+    if let Err(e) = window.eval(&script) {
+        debug!("Failed to update idle dialog window: {}", e);
+    }
+}
+
+fn close_idle_dialog_window() {
+    let Ok(app_handle_guard) = get_app_handle().lock() else {
+        error!("Failed to get app handle lock for idle dialog close");
+        return;
+    };
+    let app_handle = &*app_handle_guard;
+    if let Some(window) = app_handle.webview_windows().get("idle-dialog") {
+        if let Err(e) = window.close() {
+            debug!("Failed to close idle dialog window: {}", e);
+        } else {
+            info!("Closed idle dialog window");
+        }
     }
 }
 
