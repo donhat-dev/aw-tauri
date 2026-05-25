@@ -437,6 +437,15 @@ fn close_idle_dialog(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn set_idle_dialog_height(app: tauri::AppHandle, height: u32) {
+    if let Some(window) = app.webview_windows().get("idle-dialog") {
+        if let Err(e) = window.set_size(tauri::LogicalSize::new(672_f64, f64::from(height))) {
+            warn!("Failed to resize idle dialog: {}", e);
+        }
+    }
+}
+
+#[tauri::command]
 fn idle_dialog_action(
     timer_session_id: Option<i64>,
     action: String,
@@ -934,6 +943,7 @@ pub fn run() {
             greet,
             open_external,
             close_idle_dialog,
+            set_idle_dialog_height,
             idle_dialog_action,
             macos_tcc_permissions,
             request_macos_tcc_permission,
