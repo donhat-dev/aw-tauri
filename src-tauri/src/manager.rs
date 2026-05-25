@@ -1274,6 +1274,7 @@ fn show_idle_dialog(payload: serde_json::Value) {
     .inner_size(672.0, 468.0)
     .resizable(false)
     .decorations(false)
+    .shadow(false)
     .always_on_top(true)
     .center()
     .initialization_script(&init_script);
