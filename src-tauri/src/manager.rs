@@ -1265,7 +1265,7 @@ fn show_idle_dialog(payload: serde_json::Value) {
     };
     let init_script = format!("window.__AW_IDLE_DIALOG_PAYLOAD__ = {};", payload_json);
 
-    let window = WebviewWindowBuilder::new(
+    let wb = WebviewWindowBuilder::new(
         app_handle,
         "idle-dialog",
         WebviewUrl::App("idle-dialog.html".into()),
@@ -1274,11 +1274,15 @@ fn show_idle_dialog(payload: serde_json::Value) {
     .inner_size(672.0, 468.0)
     .resizable(false)
     .decorations(false)
-    .transparent(true)
     .always_on_top(true)
     .center()
-    .initialization_script(&init_script)
-    .build();
+    .initialization_script(&init_script);
+
+    // transparent() requires macos-private-api feature on macOS — skip to keep build portable
+    #[cfg(not(target_os = "macos"))]
+    let wb = wb.transparent(true);
+
+    let window = wb.build();
 
     match window {
         Ok(window) => {
