@@ -74,6 +74,8 @@ lazy_static! {
 }
 static CONFIG: OnceLock<UserConfig> = OnceLock::new();
 static FIRST_RUN: OnceLock<bool> = OnceLock::new();
+const ODOO_CONFIG_RESET_MARKER: &str = "reset-odoo-config";
+const ODOO_CONFIG_SETTING_KEY: &str = "settings.odoo_config";
 
 fn init_app_handle(handle: AppHandle) {
     HANDLE.get_or_init(|| AppHandleWrapper(Mutex::new(handle)));
@@ -200,6 +202,48 @@ fn build_dashboard_url(port: u16, api_key: Option<&str>) -> Url {
     }
 
     url
+}
+
+fn reset_odoo_config_if_requested(datastore: &Mutex<aw_datastore::Datastore>) {
+    let Ok(data_dir) = dirs::get_data_dir() else {
+        warn!("Unable to resolve aw-tauri data dir for Odoo config reset marker");
+        return;
+    };
+    let marker_path = data_dir.join(ODOO_CONFIG_RESET_MARKER);
+    if !marker_path.exists() {
+        return;
+    }
+
+    let reset_result = datastore
+        .lock()
+        .map_err(|err| format!("Failed to acquire datastore lock: {err}"))
+        .and_then(|datastore| {
+            datastore
+                .delete_key_value(ODOO_CONFIG_SETTING_KEY)
+                .map_err(|err| format!("Failed to delete {ODOO_CONFIG_SETTING_KEY}: {err:?}"))
+        });
+
+    match reset_result {
+        Ok(()) => {
+            info!(
+                "Reset persisted Odoo config setting after installer marker: {}",
+                ODOO_CONFIG_SETTING_KEY
+            );
+            if let Err(err) = remove_file(&marker_path) {
+                warn!(
+                    "Reset Odoo config but failed to remove marker {}: {}",
+                    marker_path.display(),
+                    err
+                );
+            }
+        }
+        Err(err) => {
+            warn!(
+                "Keeping Odoo config reset marker for retry because reset failed: {}",
+                err
+            );
+        }
+    }
 }
 
 pub fn listen_for_lockfile() {
@@ -801,6 +845,7 @@ pub fn run() {
                     asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
                     device_id,
                 };
+                reset_odoo_config_if_requested(&server_state.datastore);
                 if !is_port_available(port).expect("Failed to check port availability") {
                     app.dialog()
                         .message(format!("Port {} is already in use", port))
