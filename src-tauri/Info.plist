@@ -4,5 +4,7 @@
 <dict>
   <key>NSInputMonitoringUsageDescription</key>
   <string>ActivityWatch needs Input Monitoring to collect local keyboard and mouse activity events.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>ActivityWatch needs Screen Recording to capture desktop screenshots for activity tracking.</string>
 </dict>
 </plist>
