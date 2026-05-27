@@ -524,7 +524,6 @@ struct MacosTccPermissions {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct MacosTccAutoRequestState {
-    input_attempted: bool,
     screen_attempted: bool,
 }
 
@@ -627,23 +626,28 @@ fn maybe_request_next_macos_tcc_permission() {
     let has_screen = macos_tcc::has_screen_recording_permission();
     let path = macos_tcc_auto_request_state_path();
 
-    if has_input && has_screen {
+    info!(
+        "macOS TCC preflight from Tauri main process: input_monitoring={} screen_recording={}",
+        has_input,
+        has_screen
+    );
+    if has_input {
+        info!("macOS Input Monitoring already granted for the Tauri main process");
+    } else {
+        info!(
+            "macOS Input Monitoring not requested from the Tauri main process; aw-watcher-input requests Input Monitoring and Accessibility from the helper process"
+        );
+    }
+
+    if has_screen {
+        info!("macOS Screen Recording already granted for the Tauri main process");
         let _ = remove_file(path);
         return;
     }
 
     let mut state = load_macos_tcc_auto_request_state();
 
-    if !has_input && !state.input_attempted {
-        state.input_attempted = true;
-        save_macos_tcc_auto_request_state(&state);
-        info!("Requesting macOS Input Monitoring permission from the Tauri main process");
-        let granted = macos_tcc::request_input_monitoring_permission();
-        info!("macOS Input Monitoring request returned: {}", granted);
-        return;
-    }
-
-    if !has_screen && !state.screen_attempted {
+    if !state.screen_attempted {
         state.screen_attempted = true;
         save_macos_tcc_auto_request_state(&state);
         info!("Requesting macOS Screen Recording permission from the Tauri main process");
@@ -653,7 +657,7 @@ fn maybe_request_next_macos_tcc_permission() {
     }
 
     info!(
-        "macOS TCC permissions still missing after prior prompt attempts; relying on WebUI alerts/settings links"
+        "macOS Screen Recording still missing after prior prompt attempt; relying on WebUI alerts/settings links"
     );
 }
 
@@ -682,6 +686,7 @@ fn macos_tcc_permissions() -> MacosTccPermissions {
 fn request_macos_tcc_permission(kind: String) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
+        info!("Manual macOS TCC request from Tauri main process: kind={}", kind);
         match kind.as_str() {
             "input" | "input_monitoring" => Ok(macos_tcc::request_input_monitoring_permission()),
             "screen" | "screen_recording" => Ok(macos_tcc::request_screen_recording_permission()),

@@ -705,11 +705,14 @@ fn start_generic_module_thread(
         // Start the child process
         let mut command = Command::new(&path);
         apply_module_environment(&mut command, &name);
+        info!("Starting module {name} from {}", path.display());
 
         // Use custom args if provided, otherwise only pass port arg if it's not the default (5600)
         if let Some(ref args) = custom_args {
+            info!("Starting module {name} with custom args: {:?}", args);
             command.args(args);
         } else if get_config().port != 5600 {
+            info!("Starting module {name} with port arg: {}", get_config().port);
             command.args(["--port", get_config().port.to_string().as_str()]);
         }
 
@@ -741,6 +744,7 @@ fn start_generic_module_thread(
         };
 
         let child_pid = child.id();
+        info!("Started module {name} with pid={child_pid}");
 
         // On Windows, assign child to job object
         #[cfg(windows)]
